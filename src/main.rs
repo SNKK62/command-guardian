@@ -33,30 +33,45 @@ fn main() {
         let mut signals = Signals::new(&[SIGINT]).expect("Failed to set up signal handling");
         for _ in signals.forever() {
             suppress_output.store(true, Ordering::SeqCst);
-            print!("\nCtrl-C detected. Do you want to terminate the command? (Y/[n]):");
-            io::stdout().flush().expect("Failed to flush stdout");
-            let mut input = String::new();
-            io::stdin()
-                .read_line(&mut input)
-                .expect("Failed to read input");
-            if input.trim().eq("Y") {
-                println!("Terminating command...");
-                if let Ok(mut child) = child_process_clone.lock() {
-                    if child.as_mut().is_some() {
-                        child
-                            .as_mut()
-                            .unwrap()
-                            .kill()
-                            .expect("Failed to kill child process");
-                    }
+            let mut is_first = true;
+            let mut is_finished = false;
+            loop {
+                if is_first {
+                    println!();
+                    is_first = false;
                 }
-                is_running_clone.store(false, Ordering::SeqCst);
+                print!("Ctrl-C detected. Do you want to terminate the command? (Y/[n]):");
+                io::stdout().flush().expect("Failed to flush stdout");
+                let mut input = String::new();
+                io::stdin()
+                    .read_line(&mut input)
+                    .expect("Failed to read input");
+                if input.trim().eq("Y") {
+                    println!("Terminating command...");
+                    if let Ok(mut child) = child_process_clone.lock() {
+                        if child.as_mut().is_some() {
+                            child
+                                .as_mut()
+                                .unwrap()
+                                .kill()
+                                .expect("Failed to kill child process");
+                        }
+                    }
+                    is_running_clone.store(false, Ordering::SeqCst);
+                    is_finished = true;
+                    break;
+                } else if input.trim().eq_ignore_ascii_case("n") || input.trim().is_empty() {
+                    println!("Continuing command...");
+                    suppress_output.store(false, Ordering::SeqCst);
+                    break;
+                } else {
+                    println!("Invalid input. You must enter 'Y' or 'n/N'.");
+                }
+            }
+            if is_finished {
                 println!("Program terminated.");
                 break;
-            } else {
-                println!("Continuing command...");
             }
-            suppress_output.store(false, Ordering::SeqCst);
         }
     });
 
