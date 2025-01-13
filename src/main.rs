@@ -1,7 +1,11 @@
+use nix::pty::{openpty, OpenptyResult, Winsize};
+use nix::unistd::dup;
 use signal_hook::consts::SIGINT;
 use signal_hook::iterator::Signals;
 use std::io;
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufReader, Read, Write};
+use std::os::fd::FromRawFd;
+use std::os::unix::io::{AsRawFd, IntoRawFd};
 use std::os::unix::process::CommandExt;
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -50,15 +54,16 @@ fn main() {
                     println!("Terminating command...");
                     if let Ok(mut child) = child_process_clone.lock() {
                         if child.as_mut().is_some() {
-                            child
-                                .as_mut()
-                                .unwrap()
-                                .kill()
-                                .expect("Failed to kill child process");
+                            let c = child.as_mut().unwrap();
+                            let pid = c.id();
+                            unsafe {
+                                libc::kill(pid as i32, SIGINT);
+                            }
                         }
                     }
                     is_running_clone.store(false, Ordering::SeqCst);
                     is_finished = true;
+                    suppress_output.store(false, Ordering::SeqCst);
                     break;
                 } else if input.trim().eq_ignore_ascii_case("n") || input.trim().is_empty() {
                     println!("Continuing command...");
@@ -93,8 +98,31 @@ fn spawn_command(
     args: &[String],
     suppress_output: Arc<AtomicBool>,
 ) -> Option<Child> {
+    let term_size = termsize::get().unwrap();
+
+    // create a new PTY
+    let OpenptyResult { master, slave } = openpty(
+        Some(&Winsize {
+            ws_row: term_size.rows as u16,
+            ws_col: term_size.cols as u16,
+            ws_xpixel: 0,
+            ws_ypixel: 0,
+        }),
+        None,
+    )
+    .expect("Failed to create PTY");
+
+    let slave_fd = slave.as_raw_fd();
+    let slave_stdout = dup(slave_fd).expect("Failed to duplicate slave for stdout");
+    let slave_stderr = dup(slave_fd).expect("Failed to duplicate slave for stderr");
+
     let mut cmd = Command::new(command);
-    let child = cmd.args(args).stdout(Stdio::piped()).stderr(Stdio::piped());
+    let child = cmd
+        .args(args)
+        .stdin(Stdio::null()) // 標準入力は使用しない
+        .stdout(unsafe { Stdio::from_raw_fd(slave_stdout) })
+        .stderr(unsafe { Stdio::from_raw_fd(slave_stderr) });
+
     unsafe {
         child.pre_exec(|| {
             // create a new session for the child process
@@ -104,7 +132,7 @@ fn spawn_command(
             Ok(())
         });
     }
-    let mut child = match child.spawn() {
+    let child = match child.spawn() {
         Ok(child) => {
             println!("Invoked child process successfully (PID: {})", child.id());
             child
@@ -115,25 +143,18 @@ fn spawn_command(
         }
     };
 
-    let stdout = child.stdout.take().expect("Failed to capture stdout");
-    let stderr = child.stderr.take().expect("Failed to capture stderr");
-
-    let suppress_stdout = Arc::clone(&suppress_output);
-    thread::spawn(move || {
-        let reader = BufReader::new(stdout);
-        for line in reader.lines() {
-            if !suppress_stdout.load(Ordering::SeqCst) && line.is_ok() {
-                println!("{}", line.unwrap());
-            }
-        }
-    });
-
     let suppress_stderr = Arc::clone(&suppress_output);
+    let mut reader = BufReader::new(unsafe { std::fs::File::from_raw_fd(master.into_raw_fd()) });
     thread::spawn(move || {
-        let reader = BufReader::new(stderr);
-        for line in reader.lines() {
-            if !suppress_stderr.load(Ordering::SeqCst) && line.is_ok() {
-                eprintln!("{}", line.unwrap());
+        let mut buffer = [0; 1024];
+        while let Ok(n) = reader.read(&mut buffer) {
+            if n == 0 {
+                break;
+            }
+            if !suppress_stderr.load(Ordering::SeqCst) {
+                let output = String::from_utf8_lossy(&buffer[..n]);
+                print!("{}", output);
+                std::io::stdout().flush().unwrap();
             }
         }
     });
