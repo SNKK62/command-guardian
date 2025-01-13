@@ -89,7 +89,7 @@ fn main() {
                 }
             }
         }
-        thread::sleep(std::time::Duration::from_millis(100));
+        thread::sleep(std::time::Duration::from_millis(300));
     }
 }
 
@@ -98,10 +98,16 @@ fn spawn_command(
     args: &[String],
     suppress_output: Arc<AtomicBool>,
 ) -> Option<Child> {
-    let term_size = termsize::get().unwrap();
+    let term_size = match termsize::get() {
+        Some(size) => size,
+        None => termsize::Size { rows: 24, cols: 80 },
+    };
 
-    // create a new PTY
-    let OpenptyResult { master, slave } = openpty(
+    // create a new PTY for stdout
+    let OpenptyResult {
+        master: master_stdout,
+        slave: slave_stdout,
+    } = openpty(
         Some(&Winsize {
             ws_row: term_size.rows as u16,
             ws_col: term_size.cols as u16,
@@ -112,16 +118,32 @@ fn spawn_command(
     )
     .expect("Failed to create PTY");
 
-    let slave_fd = slave.as_raw_fd();
-    let slave_stdout = dup(slave_fd).expect("Failed to duplicate slave for stdout");
-    let slave_stderr = dup(slave_fd).expect("Failed to duplicate slave for stderr");
+    // create a new PTY for stderr
+    let OpenptyResult {
+        master: master_stderr,
+        slave: slave_stderr,
+    } = openpty(
+        Some(&Winsize {
+            ws_row: term_size.rows as u16,
+            ws_col: term_size.cols as u16,
+            ws_xpixel: 0,
+            ws_ypixel: 0,
+        }),
+        None,
+    )
+    .expect("Failed to create PTY");
+
+    let slave_stdout_fd = slave_stdout.as_raw_fd();
+    let slave_stdout_dup = dup(slave_stdout_fd).expect("Failed to duplicate slave for stdout");
+    let slave_stderr_fd = slave_stderr.as_raw_fd();
+    let slave_stderr_dup = dup(slave_stderr_fd).expect("Failed to duplicate slave for stderr");
 
     let mut cmd = Command::new(command);
     let child = cmd
         .args(args)
-        .stdin(Stdio::null()) // 標準入力は使用しない
-        .stdout(unsafe { Stdio::from_raw_fd(slave_stdout) })
-        .stderr(unsafe { Stdio::from_raw_fd(slave_stderr) });
+        .stdin(Stdio::null())
+        .stdout(unsafe { Stdio::from_raw_fd(slave_stdout_dup) })
+        .stderr(unsafe { Stdio::from_raw_fd(slave_stderr_dup) });
 
     unsafe {
         child.pre_exec(|| {
@@ -143,17 +165,35 @@ fn spawn_command(
         }
     };
 
-    let suppress_stderr = Arc::clone(&suppress_output);
-    let mut reader = BufReader::new(unsafe { std::fs::File::from_raw_fd(master.into_raw_fd()) });
+    let suppress_stdout = Arc::clone(&suppress_output);
+    let mut stdout_reader =
+        BufReader::new(unsafe { std::fs::File::from_raw_fd(master_stdout.into_raw_fd()) });
     thread::spawn(move || {
         let mut buffer = [0; 1024];
-        while let Ok(n) = reader.read(&mut buffer) {
+        while let Ok(n) = stdout_reader.read(&mut buffer) {
+            if n == 0 {
+                break;
+            }
+            if !suppress_stdout.load(Ordering::SeqCst) {
+                let output = String::from_utf8_lossy(&buffer[..n]);
+                print!("{}", output);
+                std::io::stdout().flush().unwrap();
+            }
+        }
+    });
+
+    let suppress_stderr = Arc::clone(&suppress_output);
+    let mut stderr_reader =
+        BufReader::new(unsafe { std::fs::File::from_raw_fd(master_stderr.into_raw_fd()) });
+    thread::spawn(move || {
+        let mut buffer = [0; 1024];
+        while let Ok(n) = stderr_reader.read(&mut buffer) {
             if n == 0 {
                 break;
             }
             if !suppress_stderr.load(Ordering::SeqCst) {
                 let output = String::from_utf8_lossy(&buffer[..n]);
-                print!("{}", output);
+                eprint!("{}", output);
                 std::io::stdout().flush().unwrap();
             }
         }
