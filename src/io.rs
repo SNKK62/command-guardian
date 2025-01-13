@@ -3,10 +3,14 @@ use std::process::Child;
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, RwLock};
 
+mod input;
+mod output;
 mod signals;
-mod stderr;
-mod stdin;
-mod stdout;
+
+pub(crate) enum OutputType {
+    Stdout,
+    Stderr,
+}
 
 pub(crate) fn handle_io(child: &mut Child, master_stdout: RawFd, master_stderr: RawFd) {
     let action = Arc::new(RwLock::new(signals::SigIntAction::Continue));
@@ -20,7 +24,7 @@ pub(crate) fn handle_io(child: &mut Child, master_stdout: RawFd, master_stderr: 
     );
 
     let pid = child.id();
-    stdin::handle_stdin(
+    input::handle_stdin(
         child,
         pid,
         Arc::clone(&suppress_output),
@@ -28,6 +32,14 @@ pub(crate) fn handle_io(child: &mut Child, master_stdout: RawFd, master_stderr: 
         Arc::clone(&action),
     );
 
-    stdout::handle_stdout(master_stdout, Arc::clone(&suppress_output));
-    stderr::handle_stderr(master_stderr, Arc::clone(&suppress_output));
+    output::handle_output(
+        master_stdout,
+        Arc::clone(&suppress_output),
+        OutputType::Stdout,
+    );
+    output::handle_output(
+        master_stderr,
+        Arc::clone(&suppress_output),
+        OutputType::Stderr,
+    );
 }
