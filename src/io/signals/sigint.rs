@@ -1,3 +1,4 @@
+use signal_hook::consts::SIGINT;
 use std::io;
 use std::io::Write;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -7,6 +8,7 @@ use std::thread;
 use super::SigIntAction;
 
 pub(crate) fn handle_sigint(
+    pid: u32,
     suppress_output: Arc<AtomicBool>,
     is_confirming: Arc<AtomicBool>,
     action: Arc<RwLock<SigIntAction>>,
@@ -19,8 +21,10 @@ pub(crate) fn handle_sigint(
             println!();
             is_first = false;
         }
-        print!("Ctrl-C detected. Do you want to terminate the command? (Y/[n]):");
-        io::stdout().flush().expect("Failed to flush stdout");
+        print!("\x1b[1;31mCtrl-C detected. Do you want to terminate the command? (Y/[n]): \x1b[0m");
+        io::stdout()
+            .flush()
+            .expect("\x1b[31mFailed to flush stdout\x1b[0m");
         while is_confirming.load(Ordering::SeqCst) {
             thread::sleep(std::time::Duration::from_millis(100));
         }
@@ -30,7 +34,10 @@ pub(crate) fn handle_sigint(
                 break;
             }
             SigIntAction::Terminate => {
-                println!("Program terminated.");
+                unsafe {
+                    libc::kill(pid as i32, SIGINT);
+                }
+                println!("\x1b[32mProgram terminated.\x1b[0m");
                 break;
             }
             SigIntAction::Invalid => {

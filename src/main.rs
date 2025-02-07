@@ -6,7 +6,7 @@ use command_guardian::spawn_command;
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     if args.len() < 2 {
-        eprintln!("Usage: {} <command>", args[0]);
+        eprintln!("\x1b[31mUsage: {} <command>\x1b[0m", args[0]);
         std::process::exit(1);
     }
 
@@ -19,7 +19,6 @@ fn main() {
         if let Ok(mut child) = child_process.lock() {
             if let Some(ref mut c) = child.as_mut() {
                 if let Ok(Some(_)) = c.try_wait() {
-                    println!("Command finished.");
                     break;
                 }
             }

@@ -24,7 +24,7 @@ fn create_pty(terminal_size: &termsize::Size) -> (RawFd, RawFd) {
         }),
         None,
     )
-    .expect("Failed to create PTY");
+    .expect("\x1b[31mFailed to create PTY\x1b[0m");
     (master.into_raw_fd(), slave.into_raw_fd())
 }
 
@@ -52,11 +52,14 @@ pub fn spawn_command(command: &str, args: &[String]) -> Option<Child> {
     }
     let mut child = match child.spawn() {
         Ok(child) => {
-            println!("Invoked child process successfully (PID: {})", child.id());
+            println!(
+                "\x1b[32mInvoked child process successfully (PID: \x1b[1;32m{}\x1b[32m)\x1b[0m",
+                child.id()
+            );
             child
         }
         Err(e) => {
-            println!("Failed invoke child proces: {}", e);
+            println!("\x1b[31mFailed invoke child process: {}\x1b[0m", e);
             std::process::exit(1);
         }
     };

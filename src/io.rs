@@ -17,16 +17,17 @@ pub(crate) fn handle_io(child: &mut Child, master_stdout: RawFd, master_stderr: 
     let is_confirming = Arc::new(AtomicBool::new(false));
     let suppress_output = Arc::new(AtomicBool::new(false));
 
+    let pid = child.id();
+
     signals::handle_signals(
+        pid,
         Arc::clone(&suppress_output),
         Arc::clone(&is_confirming),
         Arc::clone(&action),
     );
 
-    let pid = child.id();
     input::handle_stdin(
         child,
-        pid,
         Arc::clone(&suppress_output),
         Arc::clone(&is_confirming),
         Arc::clone(&action),
